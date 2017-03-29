@@ -1,0 +1,789 @@
+<?php
+
+namespace Cvl\LDAPWrapper;
+
+class LDAPWrapper {
+	const LDAP_ATTRIBUTE_MEMBER_OF = 'memberOf';
+	const LDAP_ATTRIBUTE_MEMBER = 'member';
+	const LDAP_ATTRIBUTE_MANAGER_OF = 'groupManagerOf';
+	const LDAP_ATTRIBUTE_MANAGER = 'groupManager';
+	const LDAP_ATTRIBUTE_DESCRIPTION = 'description';
+	const LDAP_ATTRIBUTE_ACCOUNT_NAME = 'sAMAccountName';
+	const USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT = 0x200;
+	const USER_ACCOUNT_CONTROL_ACCOUNTDISABLE = 0x2;
+	const GROUP_TYPE = 0x80000002;
+
+	protected $ldapHost;
+
+	protected $ldapPort;
+
+	protected $ldapDomain;
+
+	protected $ldapUsername;
+
+	protected $ldapPassword;
+
+	protected $baseDN;
+
+	protected $userBaseDNs;
+
+	protected $groupBaseDNs;
+
+	protected $adminGroup;
+
+	protected $newGroupDir;
+
+	protected $newUserDir;
+
+	protected $defaultGroups;
+
+	protected $defaultOfficeGroups;
+
+	protected $ldapconn = null;
+
+	public function __construct($ldapConfig) {
+		$this->ldapHost				= $ldapConfig['host'];
+		$this->ldapPort				= $ldapConfig['port'];
+		$this->ldapDomain			= $ldapConfig['domain'];
+		$this->ldapUsername			= $ldapConfig['group_manager_dn'];
+		$this->ldapPassword			= $ldapConfig['group_manager_password'];
+		$this->baseDN				= $ldapConfig['base_dn'];
+		$this->userBaseDNs			= $ldapConfig['user_directories'];
+		$this->groupBaseDNs			= $ldapConfig['group_directories'];
+		$this->adminGroup			= $ldapConfig['admin_group_dn'];
+		$this->newGroupDir			= $ldapConfig['directory_for_new_groups'];
+		$this->newUserDir			= $ldapConfig['directory_for_new_users'];
+		$this->defaultGroups		= $ldapConfig['default_groups'];
+		$this->defaultOfficeGroups	= $ldapConfig['default_office_groups'];
+
+		if ($ldapConfig['do_login']) {
+			$this->login();
+		}
+	}
+
+	protected function __destruct() {
+		$this->disconnect();
+	}
+
+	/**
+	 * Establishes an LDAP connection.
+	 * @param string $userDN
+	 * @param string $password
+	 * @throws LDAPException
+	 */
+	protected function login($userDN = null, $password = null) {
+		if (!$userDN || !$password) {
+			$userDN = $this->ldapUsername;
+			$password = $this->ldapPassword;
+		}
+		if ($this->ldapconn) {
+			$this->disconnect();
+		}
+		$this->ldapconn = ldap_connect($this->ldapHost, $this->ldapPort);
+		
+		if ($this->ldapconn) {
+			ldap_set_option($this->ldapconn, LDAP_OPT_REFERRALS, 0);
+			ldap_set_option($this->ldapconn, LDAP_OPT_PROTOCOL_VERSION, 3);
+			
+			$ldapBind = ldap_bind($this->ldapconn, $userDN, $password);
+			
+			if (!$ldapBind) {
+				throw new LDAPException("LDAP bind exception: " . ldap_error($this->ldapconn));
+			}
+		} else {
+			throw new LDAPException("LDAP connect exception: " . ldap_error($this->ldapconn));
+		}
+	}
+
+	/**
+	 * Breakes a LDAP connection.
+	 */
+	protected function disconnect() {
+		ldap_close($this->ldapconn);
+		$this->ldapconn = null;
+	}
+
+	protected function sortEntriesByCommonName(&$entries) {
+		usort($entries, function(LDAPEntry $entryA, LDAPEntry $entryB) {
+			return strcasecmp($entryA->getCommonName(), $entryB->getCommonName());
+		});
+	}
+
+	protected function sortUsersByCanModifyGroupThenCommonName(&$users, $groupDN) {
+		usort($users, function (LDAPUser $userA, LDAPUser $userB) use ($groupDN) {
+			$aCanModify = $this->canModifyGroup($groupDN, $userA->getDN());
+			$bCanModify = $this->canModifyGroup($groupDN, $userB->getDN());
+			if ($aCanModify != $bCanModify) {
+				return ($aCanModify && !$bCanModify) ? -1 : 1;
+			}
+			return strcasecmp($userA->getCommonName(), $userB->getCommonName());
+		});
+	}
+
+	public function isValidDN($str) {
+		$pattern = '/[\x5c|\*|\(|\)|\x00]/';
+		return (preg_match($pattern, $str) === 0);
+	}
+
+	public function isValidName($str) {
+		$pattern = '/[\x5c|\*|\(|\)|\x00|\,|\/]/';
+		return (preg_match($pattern, $str) === 0);
+	}
+
+	/**
+	 *
+	 * @param string $dn
+	 *        	Distinquished name of entry.
+	 * @param array $attributes
+	 *        	Array of strings-attributes which should be fetched for specified dn.
+	 * @throws \Exception in a case of error
+	 * @return array of strings containing searched attributes;
+	 *         <br><b>NOTE:</b> only attributes that actually exist in entry will be fetched.
+	 */
+	protected function getAttributesForParticularDN($dn, $attributes) {
+		$filter = "distinguishedName=$dn";
+		
+		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, $attributes);
+		
+		if (!$searchResults) {
+			throw new LDAPException('LDAP search error: ' . ldap_error($this->ldapconn));
+		}
+		
+		$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
+		
+		if (!$resultEntries) {
+			throw new LDAPException('LDAP get entries error: ' . ldap_error($this->ldapconn));
+		}
+		
+		if (!isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
+			return null;
+		}
+		
+		return $resultEntries[0];
+	}
+
+	/**
+	 *
+	 * @param string $dn        	
+	 * @param string $attribute        	
+	 * @return array of strings representing values for specified attribute, null in case there is no such attribute.
+	 */
+	public function getAttributeForParticularDN($dn, $attribute) {
+		$results = $this->getAttributesForParticularDN($dn, array(
+			$attribute
+		));
+		
+		$attributeLowerCase = strtolower($attribute);
+		
+		if (!isset($results[$attributeLowerCase])) {
+			return null;
+		} else {
+			$returnValue = $results[$attributeLowerCase];
+			unset($returnValue['count']);
+			return $returnValue;
+		}
+	}
+
+	/**
+	 * Renames specified dn
+	 * 
+	 * @param string $dn
+	 *        	DN which should be renamed
+	 * @param string $newDN
+	 *        	New value of dn
+	 * @throws LDAPException in a case of error
+	 */
+	public function renameDN($dn, $newDN) {
+		$position = strpos($newDN, ',');
+		$parentDN = substr($newDN, $position + 1);
+		$newRDN = substr($newDN, 0, $position);
+		
+		if (ldap_rename($this->ldapconn, $dn, $newRDN, $parentDN, true)) {
+			$info = array();
+			// account name should be changed, otherwise old dn of this group could not be used for new ones.
+			$info[self::LDAP_ATTRIBUTE_ACCOUNT_NAME] = substr($newRDN, strpos($newRDN, '=') + 1);
+			ldap_modify($this->ldapconn, $newDN, $info);
+		} else {
+			throw new LDAPException('Ldap rename error: ' . ldap_error($this->ldapconn));
+		}
+	}
+
+	/**
+	 * Changes description of specified dn.
+	 * 
+	 * @param string $dn        	
+	 * @param string $newDescription        	
+	 */
+	public function changeDescription($dn, $newDescription) {
+		$info = array();
+		$info[self::LDAP_ATTRIBUTE_DESCRIPTION] = $newDescription;
+		ldap_modify($this->ldapconn, $dn, $info);
+	}
+
+	/**
+	 * Deletes specified dn.
+	 * 
+	 * @throws LDAPException in a case of error
+	 */
+	public function deleteDN($dn) {
+		if (!ldap_delete($this->ldapconn, $dn)) {
+			throw new LDAPException('Ldap delete error: ' . ldap_error($this->ldapconn));
+		}
+	}
+
+	/**
+	 * Creates a user in the $newUserDir and adds it to the required groups
+	 * @param string $firstName
+	 * @param string $lastName
+	 * @param string $username
+	 * @param string $email
+	 * @param string $office
+	 * @param string $password
+	 * @param boolean $active
+	 * @return string The distinguished name of the created user, or null if the operation fails
+	 */
+	public function createUser($firstName, $lastName, $username, $email, $office, $password, $active) {
+		$fullName = $firstName . ' ' . $lastName;
+		$info = array(
+			'objectClass'						=> array(
+													'top',
+													'person',
+													'organizationalPerson',
+													'user',
+												),
+			'givenName'							=> $firstName,
+			'sn'								=> $lastName,
+			'cn'								=> $fullName,
+			'displayName'						=> $fullName,
+			self::LDAP_ATTRIBUTE_DESCRIPTION	=> $fullName,
+			self::LDAP_ATTRIBUTE_ACCOUNT_NAME	=> $username,
+			'userPrincipalName'					=> $username . '@' . $this->ldapDomain,
+			'mail'								=> $email,
+			'unicodePwd'						=> iconv('UTF-8', 'UTF-16LE', '"' . $password . '"'),
+			'pwdLastSet'						=> '0',
+			'physicalDeliveryOfficeName'		=> $office,
+			'userAccountControl'				=> self::USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT,
+		);
+		if (!$active) {
+			$info['userAccountControl'] = $info['userAccountControl'] | self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
+		}
+		$dn = "CN=$fullName,$this->newUserDir";
+		if (!@ldap_add($this->ldapconn, $dn, $info)) {
+			error_log('Error creating user in LDAP: ' . ldap_error($this->ldapconn));
+			return null;
+		}
+		$groupsToJoin = $this->defaultGroups;
+		$groupsToJoin[] = $this->defaultOfficeGroups[$office];
+		foreach ($groupsToJoin as $groupDN) {
+			$this->addMemberToGroup($dn, $groupDN);
+		}
+		return $dn;
+	}
+
+	/**
+	 * Edits the user with the given $userDN
+	 * @param string $currentUsername
+	 * @param string $firstName
+	 * @param string $lastName
+	 * @param string $username
+	 * @param string $email
+	 * @param string $office
+	 * @param boolean $active
+	 * @return string The new distinguished name, or null if the operation fails
+	 */
+	public function editUser($currentUsername, $firstName, $lastName, $username, $email, $office, $active) {
+		try {
+			$currentDN = $this->getUserDNByUsername($currentUsername);
+		} catch (LDAPException $e) {
+			error_log('Error searching for user in LDAP: ' . $e->getMessage());
+			return null;
+		}
+		$fullName = $firstName . ' ' . $lastName;
+		$newDN = "CN=$fullName,$this->newUserDir";
+		if ($currentDN != $newDN) {
+			if (!@ldap_rename($this->ldapconn, $currentDN, "CN=$fullName", $this->newUserDir, true)) {
+				error_log('Error renaming user in LDAP: ' . ldap_error($this->ldapconn));
+				return null;
+			}
+		}
+		$info = array(
+			'givenName'							=> $firstName,
+			'sn'								=> $lastName,
+			'displayName'						=> $fullName,
+			self::LDAP_ATTRIBUTE_DESCRIPTION	=> $fullName,
+			self::LDAP_ATTRIBUTE_ACCOUNT_NAME	=> $username,
+			'userPrincipalName'					=> $username . '@' . $this->ldapDomain,
+			'mail'								=> $email,
+			'physicalDeliveryOfficeName'		=> $office,
+			'userAccountControl'				=> self::USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT,
+		);
+		if (!$active) {
+			$info['userAccountControl'] = $info['userAccountControl'] | self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
+		}
+		if (!@ldap_modify($this->ldapconn, $newDN, $info)) {
+			error_log('Error modifying user in LDAP: ' . ldap_error($this->ldapconn));
+			return null;
+		}
+		return $newDN;
+	}
+
+	/**
+	 *
+	 * @param string $name
+	 *        	Name of the group
+	 * @return string|null Returns DN of newly created group on success or NULL on failure.
+	 */
+	public function createGroup($name, $description = null) {
+		$info['cn'] = $name;
+		$info['objectClass'][0] = 'top';
+		$info['objectClass'][1] = 'group';
+		$info['groupType'] = self::GROUP_TYPE;
+		$info[self::LDAP_ATTRIBUTE_ACCOUNT_NAME] = $name;
+		if (!empty($description)) {
+			$info[self::LDAP_ATTRIBUTE_DESCRIPTION] = $description;
+		}
+		
+		$dn = "CN=$name,$this->newGroupDir";
+		
+		if (ldap_add($this->ldapconn, $dn, $info)) {
+			return $dn;
+		} else {
+			return null;
+		}
+	}
+
+	/**
+	 *
+	 * @param string $commonName
+	 *        	User common name
+	 * @throws LDAPException in a case of error
+	 * @return string DN of user with provided common name.
+	 */
+	public function getUserDNByCommonName($commonName) {
+		$filter = "cn=$commonName";
+		
+		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, array(
+			'dn'
+		));
+		
+		if (!$searchResults) {
+			throw new LDAPException('User with provided common name does not exist');
+		}
+		
+		$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
+		
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
+			throw new LDAPException('There are multiple users with provided common name');
+		}
+		
+		return $resultEntries[0]['dn'];
+	}
+
+	/**
+	 *
+	 * @param string $username
+	 *        	User's username
+	 * @throws LDAPException in a case of error
+	 * @return string DN of user with provided username.
+	 */
+	public function getUserDNByUsername($username) {
+		$filter = self::LDAP_ATTRIBUTE_ACCOUNT_NAME . "=$username";
+		
+		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, array(
+			'dn'
+		));
+		
+		if (!$searchResults) {
+			throw new LDAPException('User with provided username does not exist');
+		}
+		
+		$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
+		
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
+			throw new LDAPException('User with provided username does not exist, or there are multiple users with provided username');
+		}
+		
+		return $resultEntries[0]['dn'];
+	}
+
+	/**
+	 *
+	 * @param string $groupDN        	
+	 * @param string $userDN        	
+	 * @return boolean|bool whether specified user is member of specified group
+	 */
+	public function isGroupMember($groupDN, $userDN) {
+		$attribute = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+		
+		if ($attribute === null) {
+			return false;
+		}
+		
+		return in_array($userDN, $attribute);
+	}
+
+	/**
+	 *
+	 * @param string $groupDN        	
+	 * @param string $userDN        	
+	 * @return boolean|bool whether specified user is manager of specified group
+	 */
+	public function isGroupManager($groupDN, $userDN) {
+		$attribute = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MANAGER);
+		
+		if ($attribute === null) {
+			return false;
+		}
+		
+		return in_array($userDN, $attribute);
+	}
+
+	public function isAdmin($userDN) {
+		return $this->isGroupMember($this->adminGroup, $userDN);
+	}
+
+	/**
+	 *
+	 * @param string $groupDN        	
+	 * @param string $userDN        	
+	 * @return boolean|bool whether specified user can modify specified group
+	 */
+	public function canModifyGroup($groupDN, $userDN) {
+		if ($this->isAdmin($userDN)) {
+			return true;
+		}
+		
+		return $this->isGroupManager($groupDN, $userDN);
+	}
+
+	/**
+	 * Filters $dns by eliminating those dns that are not on the paths specified by $filter
+	 *
+	 * @param array $dns
+	 *        	- array of DNs
+	 * @param array $filter
+	 *        	- array of DNs representing paths that should serve as filter
+	 */
+	protected function filterDNs(&$dns, $filter) {
+		if (empty($dns)) {
+			return;
+		}
+		
+		foreach ($dns as $index => $dn) {
+			$regularDN = false;
+			foreach ($filter as $baseDN) {
+				if (strpos($dn, $baseDN) !== false) {
+					$regularDN = true;
+					break;
+				}
+			}
+			
+			if (!$regularDN) {
+				unset($dns[$index]);
+			}
+		}
+	}
+
+	/**
+	 *
+	 * @param string $userDN
+	 *        	Distinguished name of member
+	 * @param bool $sort
+	 *        	Whether resulting array should be sorted
+	 * @return array of LDAPGroup objects representing groups which user is member of, null if user is not member of any group.
+	 */
+	public function getGroupsUserIsMemberOf($userDN, $sort = true) {
+		$groupsArray = $this->getAttributeForParticularDN($userDN, self::LDAP_ATTRIBUTE_MEMBER_OF);
+		$this->filterDNs($groupsArray, $this->groupBaseDNs);
+		
+		if (empty($groupsArray)) {
+			return null;
+		}
+
+		$groups = array();
+		foreach ($groupsArray as $groupDN) {
+			$groups[] = new LDAPGroup($this, $groupDN);
+		}
+		
+		if ($sort) {
+			$this->sortEntriesByCommonName($groups);
+		}
+		
+		return $groups;
+	}
+
+	/**
+	 *
+	 * @param string $userDN
+	 *        	Distinguished name of member
+	 * @return array of LDAPGroup objects representing groups which user is manager of, null if user is not manager of any group.
+	 */
+	public function getGroupsUserIsManagerOf($userDN, $sort = true) {
+		$groupsArray = $this->getAttributeForParticularDN($userDN, self::LDAP_ATTRIBUTE_MANAGER_OF);
+		$this->filterDNs($groupsArray, $this->groupBaseDNs);
+		
+		if (empty($groupsArray)) {
+			return null;
+		}
+
+		$groups = array();
+		foreach ($groupsArray as $groupDN) {
+			$groups[] = new LDAPGroup($this, $groupDN);
+		}
+		
+		if ($sort) {
+			$this->sortEntriesByCommonName($groups);
+		}
+		
+		return $groups;
+	}
+
+	/**
+	 *
+	 * @param string $userDN
+	 *        	Distinguished name of user
+	 * @return array of LDAPGroup objects representing groups which user can modify, null if user cannot modify any group
+	 */
+	public function getGroupsUserCanModify($userDN, $sort = true) {
+		$groupsArray = null;
+		if ($this->isAdmin($userDN)) {
+			$groupsArray = $this->getAllGroups();
+		} else {
+			$groupsArray = $this->getAttributeForParticularDN($userDN, self::LDAP_ATTRIBUTE_MANAGER_OF);
+		}
+		
+		$this->filterDNs($groupsArray, $this->groupBaseDNs);
+		
+		if (empty($groupsArray)) {
+			return null;
+		}
+
+		$groups = array();
+		foreach ($groupsArray as $groupDN) {
+			$groups[] = new LDAPGroup($this, $groupDN);
+		}
+		
+		if ($sort) {
+			$this->sortEntriesByCommonName($groups);
+		}
+		
+		return $groups;
+	}
+
+	/**
+	 *
+	 * @param string $groupDN        	
+	 * @return array of LDAPUser objects representing members of the specified group, NULL if there are no members in group.
+	 */
+	public function getMembersOfGroup($groupDN, $sort = true) {
+		$membersArray = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+		$this->filterDNs($membersArray, $this->userBaseDNs);
+		
+		if ($membersArray == null) {
+			return null;
+		}
+
+		$members = array();
+		foreach ($membersArray as $memberDN) {
+			$members[] = new LDAPUser($this, $memberDN);
+		}
+		
+		if ($sort) {
+			$this->sortUsersByCanModifyGroupThenCommonName($members, $groupDN);
+		}
+		
+		return $members;
+	}
+
+	/**
+	 *
+	 * @param string $groupDN        	
+	 * @return array of LDAPUser objects representing managers of the specified group, NULL if there are no managers in group.
+	 */
+	public function getManagersOfGroup($groupDN, $sort = true) {
+		$managersArray = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MANAGER);
+		$this->filterDNs($managersArray, $this->userBaseDNs);
+		
+		if ($managersArray == null) {
+			return null;
+		}
+
+		$managers = array();
+		foreach ($managersArray as $memberDN) {
+			$managers[] = new LDAPUser($this, $memberDN);
+		}
+		
+		if ($sort) {
+			$this->sortEntriesByCommonName($managers);
+		}
+		
+		return $managers;
+	}
+
+	public function getNumberOfManagersInGroup($groupDN) {
+		return count($this->getManagersOfGroup($groupDN));
+	}
+
+	protected function getAllGroups() {
+		$filter = 'objectClass=group';
+		
+		$attributes = array(
+			'dn'
+		);
+		
+		$groups = null;
+		
+		foreach ($this->groupBaseDNs as $groupDN) {
+			$searchResults = ldap_search($this->ldapconn, $groupDN, $filter, $attributes);
+			
+			if (!$searchResults) {
+				return null;
+			}
+			
+			$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
+			
+			if (!$resultEntries) {
+				return null;
+			}
+			
+			for($i = 0; $i < $resultEntries['count']; $i++) {
+				// to show the attribute displayName (note the case!)
+				$groups[] = $resultEntries[$i]['dn'];
+			}
+		}
+		
+		return $groups;
+	}
+
+	/**
+	 *
+	 * @return array of LDAPUser objects representing all users that are on userBaseDNs path, null if there are no such users.
+	 */
+	public function getAllUsers() {
+		$filter = 'objectClass=user';
+		
+		$attributes = array(
+			'dn'
+		);
+		
+		$users = null;
+		
+		foreach ($this->userBaseDNs as $baseDN) {
+			$searchResults = ldap_search($this->ldapconn, $baseDN, $filter, $attributes);
+			
+			if (!$searchResults) {
+				return null;
+			}
+			
+			$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
+			
+			if (!$resultEntries) {
+				return null;
+			}
+			
+			for($i = 0; $i < $resultEntries['count']; $i++) {
+				// to show the attribute displayName (note the case!)
+				$users[] = new LDAPUser($this, $resultEntries[$i]['dn']);
+			}
+		}
+		
+		return $users;
+	}
+
+	/**
+	 * Adds member to group
+	 *
+	 * @param string $memberDN        	
+	 * @param string $groupDN        	
+	 */
+	public function addMemberToGroup($memberDN, $groupDN) {
+		/*
+		 * When adding/editing attributes for a user, the 'memberof' attribute is a special case.
+		 * The memberOf attribute is not an accessible attribute of the user schema.
+		 * To add someone to a group, you have to add the user in the group, and not the group in the user.
+		 * You can do this by accessing the group attribute 'member':
+		 */
+		if (!$this->isGroupMember($groupDN, $memberDN)) {
+			ldap_mod_add($this->ldapconn, $groupDN, array(
+				self::LDAP_ATTRIBUTE_MEMBER => $memberDN
+			));
+		}
+	}
+
+	/**
+	 * Adds manager to group
+	 *
+	 * @param string $memberDN        	
+	 * @param string $groupDN        	
+	 */
+	public function addManagerToGroup($memberDN, $groupDN) {
+		$this->addMemberToGroup($memberDN, $groupDN);
+		
+		if (!$this->isGroupManager($groupDN, $memberDN)) {
+			ldap_mod_add($this->ldapconn, $groupDN, array(
+				self::LDAP_ATTRIBUTE_MANAGER => $memberDN
+			));
+			ldap_mod_add($this->ldapconn, $memberDN, array(
+				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
+			));
+		}
+	}
+
+	/**
+	 * Removes user from group
+	 *
+	 * @param string $memberDN        	
+	 * @param string $groupDN        	
+	 */
+	public function removeUserFromGroup($memberDN, $groupDN) {
+		if ($this->isGroupManager($groupDN, $memberDN)) {
+			ldap_mod_del($this->ldapconn, $groupDN, array(
+				self::LDAP_ATTRIBUTE_MANAGER => $memberDN
+			));
+			ldap_mod_del($this->ldapconn, $memberDN, array(
+				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
+			));
+		}
+		if ($this->isGroupMember($groupDN, $memberDN)) {
+			ldap_mod_del($this->ldapconn, $groupDN, array(
+				self::LDAP_ATTRIBUTE_MEMBER => $memberDN
+			));
+		}
+	}
+
+	/**
+	 * Removes manager rights of user over group
+	 * Requires: User has manager rights over group, otherwise function does not have effects
+	 *
+	 * @param string $memberDN        	
+	 * @param string $groupDN        	
+	 */
+	public function removeManagerRights($memberDN, $groupDN) {
+		if ($this->isGroupManager($groupDN, $memberDN)) {
+			ldap_mod_del($this->ldapconn, $groupDN, array(
+				self::LDAP_ATTRIBUTE_MANAGER => $memberDN
+			));
+			ldap_mod_del($this->ldapconn, $memberDN, array(
+				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
+			));
+		}
+	}
+
+	/**
+	 * Adds manager rights to user over group
+	 * Requires: User is member of a specified group, otherwise unpredicted errors could occur
+	 *
+	 * @param string $memberDN        	
+	 * @param string $groupDN        	
+	 */
+	public function addManagerRights($memberDN, $groupDN) {
+		if (!$this->isGroupManager($groupDN, $memberDN)) {
+			ldap_mod_add($this->ldapconn, $groupDN, array(
+				self::LDAP_ATTRIBUTE_MANAGER => $memberDN
+			));
+			ldap_mod_add($this->ldapconn, $memberDN, array(
+				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
+			));
+		}
+	}
+}

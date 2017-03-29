@@ -1,0 +1,19 @@
+{
+	"name" : "djordjec/ldap-wrapper",
+	"description" : "Functionality for communicating via LDAP protocol, including authentication, reading and managing users, and reading and managing groups",
+	"type" : "library",
+	"authors" : [{
+			"name" : "Djordje Cvijic",
+			"email" : "djordje.cvijic.etf@gmail.com"
+		}
+	],
+	"license" : "MIT",
+	"require" : {
+		"php" : ">=5.4"
+	},
+	"autoload" : {
+		"psr-0" : {
+			"Cvl" : "src/"
+		}
+	}
+}
