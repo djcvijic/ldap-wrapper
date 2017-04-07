@@ -5,6 +5,8 @@ namespace Cvl\LDAPWrapper;
 class LDAPUser extends LDAPEntry {
 	const EMPTY_RESULT = -1;
 
+	protected $displayName = self::EMPTY_RESULT;
+
 	protected $mail = self::EMPTY_RESULT;
 	
 	protected $isAdmin = self::EMPTY_RESULT;
@@ -12,6 +14,19 @@ class LDAPUser extends LDAPEntry {
 	protected $managerOf = array();
 
 	protected $memberOf = array();
+
+	public function getDisplayName() {
+		if ($this->displayName == self::EMPTY_RESULT) {
+			$displayNameAttributes = $this->ldapWrapper->getAttributeForParticularDN($this->getDN(), 'displayName');
+
+			if (isset($displayNameAttributes) && isset($displayNameAttributes[0])) {
+				$this->displayName = $displayNameAttributes[0];
+			} else {
+				$this->displayName = null;
+			}
+		}
+		return $this->displayName;
+	}
 
 	public function getMail() {
 		if ($this->mail === self::EMPTY_RESULT) {
@@ -58,11 +73,11 @@ class LDAPUser extends LDAPEntry {
 
 	public function toArray() {
 		return array(
-			'mail' => $this->getMail(), 
-			'commonName' => $this->getCommonName(), 
+			'mail' => $this->getMail(),
+			'displayName' => $this->getDisplayName(),
 			'tokens' => array_merge(array(
 				$this->getMail()
-			), explode(' ', $this->getCommonName()))
+			), explode(' ', $this->getDisplayName()))
 		);
 	}
 }
