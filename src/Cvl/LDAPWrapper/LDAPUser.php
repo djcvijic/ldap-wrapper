@@ -70,14 +70,4 @@ class LDAPUser extends LDAPEntry {
 		}
 		return $this->isAdmin;
 	}
-
-	public function toArray() {
-		return array(
-			'mail' => $this->getMail(),
-			'displayName' => $this->getDisplayName(),
-			'tokens' => array_merge(array(
-				$this->getMail()
-			), explode(' ', $this->getDisplayName()))
-		);
-	}
 }
