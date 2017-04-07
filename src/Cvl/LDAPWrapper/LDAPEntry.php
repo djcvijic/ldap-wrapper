@@ -15,6 +15,10 @@ class LDAPEntry {
 		$this->dn = $dn;
 	}
 
+	public function __toString() {
+		return $this->dn;
+	}
+
 	public function getDN() {
 		return $this->dn;
 	}

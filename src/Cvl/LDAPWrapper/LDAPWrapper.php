@@ -414,12 +414,19 @@ class LDAPWrapper {
 	 */
 	public function isGroupMember($groupDN, $userDN) {
 		$attribute = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
-		
+
 		if ($attribute === null) {
 			return false;
 		}
+
+		if (in_array($userDN, $attribute)) return true;
+
+		$nestedGroupArray = $this->filterDNs($attribute, $this->groupBaseDNs);
+		foreach ($nestedGroupArray as $nestedGroupDN) {
+			if ($this->isGroupMember($nestedGroupDN, $userDN)) return true;
+		}
 		
-		return in_array($userDN, $attribute);
+		return false;
 	}
 
 	/**
@@ -430,11 +437,11 @@ class LDAPWrapper {
 	 */
 	public function isGroupManager($groupDN, $userDN) {
 		$attribute = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MANAGER);
-		
+
 		if ($attribute === null) {
 			return false;
 		}
-		
+
 		return in_array($userDN, $attribute);
 	}
 
@@ -464,7 +471,7 @@ class LDAPWrapper {
 	 * @param array $filter
 	 *        	- array of DNs representing paths that should serve as filter
 	 */
-	protected function filterDNs(&$dns, $filter) {
+	protected function filterDNs($dns, $filter) {
 		if (empty($dns)) {
 			return;
 		}
@@ -482,6 +489,8 @@ class LDAPWrapper {
 				unset($dns[$index]);
 			}
 		}
+
+		return $dns;
 	}
 
 	/**
@@ -494,22 +503,7 @@ class LDAPWrapper {
 	 */
 	public function getGroupsUserIsMemberOf($userDN, $sort = true) {
 		$groupsArray = $this->getAttributeForParticularDN($userDN, self::LDAP_ATTRIBUTE_MEMBER_OF);
-		$this->filterDNs($groupsArray, $this->groupBaseDNs);
-		
-		if (empty($groupsArray)) {
-			return null;
-		}
-
-		$groups = array();
-		foreach ($groupsArray as $groupDN) {
-			$groups[] = new LDAPGroup($this, $groupDN);
-		}
-		
-		if ($sort) {
-			$this->sortEntriesByCommonName($groups);
-		}
-		
-		return $groups;
+		return $this->groupDNsToGroupsFilteredAndSorted($groupsArray, $sort);
 	}
 
 	/**
@@ -520,22 +514,16 @@ class LDAPWrapper {
 	 */
 	public function getGroupsUserIsManagerOf($userDN, $sort = true) {
 		$groupsArray = $this->getAttributeForParticularDN($userDN, self::LDAP_ATTRIBUTE_MANAGER_OF);
-		$this->filterDNs($groupsArray, $this->groupBaseDNs);
-		
-		if (empty($groupsArray)) {
-			return null;
-		}
+		return $this->groupDNsToGroupsFilteredAndSorted($groupsArray, $sort);
+	}
 
-		$groups = array();
-		foreach ($groupsArray as $groupDN) {
-			$groups[] = new LDAPGroup($this, $groupDN);
-		}
-		
-		if ($sort) {
-			$this->sortEntriesByCommonName($groups);
-		}
-		
-		return $groups;
+	/**
+	 * @param bool $sort
+	 * @return array|null
+	 */
+	public function getAllGroups($sort = true) {
+		$groupDNs = $this->getAllGroupDNs();
+		return $this->groupDNsToGroupsFilteredAndSorted($groupDNs, $sort);
 	}
 
 	/**
@@ -545,28 +533,30 @@ class LDAPWrapper {
 	 * @return array of LDAPGroup objects representing groups which user can modify, null if user cannot modify any group
 	 */
 	public function getGroupsUserCanModify($userDN, $sort = true) {
-		$groupsArray = null;
 		if ($this->isAdmin($userDN)) {
-			$groupsArray = $this->getAllGroups();
+			return $this->getAllGroups($sort);
 		} else {
-			$groupsArray = $this->getAttributeForParticularDN($userDN, self::LDAP_ATTRIBUTE_MANAGER_OF);
+			return $this->getGroupsUserIsManagerOf($userDN, $sort);
 		}
-		
-		$this->filterDNs($groupsArray, $this->groupBaseDNs);
-		
-		if (empty($groupsArray)) {
+	}
+
+	/**
+	 * @param $groupDns
+	 * @param $sort
+	 * @return array|null
+	 */
+	protected function groupDNsToGroupsFilteredAndSorted($groupDns, $sort) {
+		$groupDns = $this->filterDNs($groupDns, $this->groupBaseDNs);
+		if (empty($groupDns)) {
 			return null;
 		}
-
 		$groups = array();
-		foreach ($groupsArray as $groupDN) {
+		foreach ($groupDns as $groupDN) {
 			$groups[] = new LDAPGroup($this, $groupDN);
 		}
-		
 		if ($sort) {
 			$this->sortEntriesByCommonName($groups);
 		}
-		
 		return $groups;
 	}
 
@@ -576,8 +566,8 @@ class LDAPWrapper {
 	 * @return array of LDAPUser objects representing members of the specified group, NULL if there are no members in group.
 	 */
 	public function getMembersOfGroup($groupDN, $sort = true) {
-		$membersArray = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
-		$this->filterDNs($membersArray, $this->userBaseDNs);
+		$dns = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+		$membersArray = $this->filterDNs($dns, $this->userBaseDNs);
 		
 		if ($membersArray == null) {
 			return null;
@@ -587,7 +577,13 @@ class LDAPWrapper {
 		foreach ($membersArray as $memberDN) {
 			$members[] = new LDAPUser($this, $memberDN);
 		}
-		
+
+		$nestedGroupArray = $this->filterDNs($dns, $this->groupBaseDNs);
+		foreach ($nestedGroupArray as $nestedGroupDN) {
+			$members = array_merge($members, $this->getMembersOfGroup($nestedGroupDN, false));
+		}
+		$members = array_unique($members);
+
 		if ($sort) {
 			$this->sortUsersByCanModifyGroupThenCommonName($members, $groupDN);
 		}
@@ -624,7 +620,7 @@ class LDAPWrapper {
 		return count($this->getManagersOfGroup($groupDN));
 	}
 
-	protected function getAllGroups() {
+	protected function getAllGroupDNs() {
 		$filter = 'objectClass=group';
 		
 		$attributes = array(

@@ -9,6 +9,10 @@ class LDAPUser extends LDAPEntry {
 	
 	protected $isAdmin = self::EMPTY_RESULT;
 
+	protected $managerOf = array();
+
+	protected $memberOf = array();
+
 	public function getMail() {
 		if ($this->mail === self::EMPTY_RESULT) {
 			$mailAttributes = $this->ldapWrapper->getAttributeForParticularDN($this->getDN(), 'mail');
@@ -28,7 +32,17 @@ class LDAPUser extends LDAPEntry {
 	}
 
 	public function isManagerOf($groupDN) {
-		return $this->ldapWrapper->isGroupManager($groupDN, $this->getDN());
+		if (!isset($this->managerOf[$groupDN])) {
+			$this->managerOf[$groupDN] = $this->ldapWrapper->isGroupManager($groupDN, $this->getDN());
+		}
+		return $this->managerOf[$groupDN];
+	}
+
+	public function isMemberOf($groupDN) {
+		if (!isset($this->memberOf[$groupDN])) {
+			$this->memberOf[$groupDN] = $this->ldapWrapper->isGroupMember($groupDN, $this->getDN());
+		}
+		return $this->memberOf[$groupDN];
 	}
 
 	public function canModify($groupDN) {
