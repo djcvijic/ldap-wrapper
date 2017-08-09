@@ -360,22 +360,26 @@ class LDAPWrapper {
 	 * @return string DN of user with provided common name.
 	 */
 	public function getUserDNByCommonName($commonName) {
-		$filter = "cn=$commonName";
-		
+		$filter = "(&(objectCategory=person)(cn=$commonName))";
+
 		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, array(
 			'dn'
 		));
-		
+
 		if (!$searchResults) {
 			throw new LDAPException('User with provided common name does not exist');
 		}
-		
+
 		$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
-		
-		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
+
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] === 0) {
+			throw new LDAPException('User with provided common name does not exist');
+		}
+
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] > 1) {
 			throw new LDAPException('There are multiple users with provided common name');
 		}
-		
+
 		return $resultEntries[0]['dn'];
 	}
 
@@ -387,22 +391,26 @@ class LDAPWrapper {
 	 * @return string DN of user with provided username.
 	 */
 	public function getUserDNByUsername($username) {
-		$filter = self::LDAP_ATTRIBUTE_ACCOUNT_NAME . "=$username";
-		
+		$filter = "(&(objectCategory=person)(" . self::LDAP_ATTRIBUTE_ACCOUNT_NAME . "=$username" . "))";
+
 		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, array(
 			'dn'
 		));
-		
+
 		if (!$searchResults) {
 			throw new LDAPException('User with provided username does not exist');
 		}
-		
+
 		$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
-		
-		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
-			throw new LDAPException('User with provided username does not exist, or there are multiple users with provided username');
+
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] === 0) {
+			throw new LDAPException('User with provided username does not exist');
 		}
-		
+
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] > 1) {
+			throw new LDAPException('There are multiple users with provided username');
+		}
+
 		return $resultEntries[0]['dn'];
 	}
 
