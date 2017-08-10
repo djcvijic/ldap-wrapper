@@ -9,6 +9,7 @@ class LDAPWrapper {
 	const LDAP_ATTRIBUTE_MANAGER = 'groupManager';
 	const LDAP_ATTRIBUTE_DESCRIPTION = 'description';
 	const LDAP_ATTRIBUTE_ACCOUNT_NAME = 'sAMAccountName';
+	const LDAP_MATCHING_RULE_BIT_AND = '1.2.840.113556.1.4.803';
 	const USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT = 0x200;
 	const USER_ACCOUNT_CONTROL_ACCOUNTDISABLE = 0x2;
 	const GROUP_TYPE = 0x80000002;
@@ -661,10 +662,17 @@ class LDAPWrapper {
 
 	/**
 	 *
+	 * @param bool $includeDisabled - Includes disabled users. (can be used only with ActiveDirectory)
 	 * @return array of LDAPUser objects representing all users that are on userBaseDNs path, null if there are no such users.
 	 */
-	public function getAllUsers() {
-		$filter = 'objectClass=user';
+	public function getAllUsers($includeDisabled = true) {
+		$isPerson = 'objectCategory=person';
+		if ($includeDisabled) {
+			$filter = $isPerson;
+		} else {
+			$isDisabled = 'UserAccountControl:' . self::LDAP_MATCHING_RULE_BIT_AND . ':=' . self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
+			$filter = "(&($isPerson)(!($isDisabled)))";
+		}
 		
 		$attributes = array(
 			'dn'
