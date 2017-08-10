@@ -586,33 +586,48 @@ class LDAPWrapper {
 	}
 
 	/**
+	 * @deprecated Use getAllUserTypeMembersOfGroup
 	 *
-	 * @param string $groupDN        	
+	 * @param string $groupDN
+	 * @param bool $sort
 	 * @return array of LDAPUser objects representing members of the specified group, NULL if there are no members in group.
 	 */
 	public function getMembersOfGroup($groupDN, $sort = true) {
+		return $this->getAllUserTypeMembersOfGroup($groupDN, $sort);
+	}
+
+	/**
+	 * Recursively get user type members from specified group and all nested groups within it
+	 *
+	 * @param string $groupDN
+	 * @param bool $sort
+	 * @return array of LDAPUser objects representing members of the specified group, NULL if there are no members in group.
+	 */
+	public function getAllUserTypeMembersOfGroup($groupDN, $sort = true) {
 		$dns = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
 		$membersArray = $this->filterDNs($dns, $this->userBaseDNs);
-		
-		if ($membersArray == null) {
-			return null;
-		}
 
 		$members = array();
-		foreach ($membersArray as $memberDN) {
-			$members[] = new LDAPUser($this, $memberDN);
+
+		if ($membersArray != null) {
+			foreach ($membersArray as $memberDN) {
+				$members[] = new LDAPUser($this, $memberDN);
+			}
 		}
 
 		$nestedGroupArray = $this->filterDNs($dns, $this->groupBaseDNs);
-		foreach ($nestedGroupArray as $nestedGroupDN) {
-			$members = array_merge($members, $this->getMembersOfGroup($nestedGroupDN, false));
+
+		if ($nestedGroupArray != null) {
+			foreach ($nestedGroupArray as $nestedGroupDN) {
+				$members = array_merge($members, $this->getAllUserTypeMembersOfGroup($nestedGroupDN, false));
+			}
+			$members = array_unique($members);
 		}
-		$members = array_unique($members);
 
 		if ($sort) {
 			$this->sortUsersByCanModifyGroupThenCommonName($members, $groupDN);
 		}
-		
+
 		return $members;
 	}
 

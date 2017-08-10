@@ -26,7 +26,7 @@ class LDAPGroup extends LDAPEntry {
 
 	public function getMembers() {
 		if ($this->members === self::EMPTY_RESULT) {
-			$this->members = $this->ldapWrapper->getMembersOfGroup($this->getDN());
+			$this->members = $this->ldapWrapper->getAllUserTypeMembersOfGroup($this->getDN());
 		}
 		return $this->members;
 	}
