@@ -459,6 +459,22 @@ class LDAPWrapper {
 	}
 
 	/**
+	 * @param $userDN
+	 * @return bool whether specified user is disabled or not (works only with ActiveDirectory, otherwise returns false)
+	 */
+	public function isDisabled($userDN) {
+		$attribute = $this->getAttributeForParticularDN($userDN, 'UserAccountControl');
+
+		if ($attribute === null && !isset($attribute[0])) {
+			return false;
+		}
+
+		$attribute = intval($attribute[0]);
+
+		return ($attribute & self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE) !== 0;
+	}
+
+	/**
 	 *
 	 * @param string $groupDN        	
 	 * @param string $userDN        	

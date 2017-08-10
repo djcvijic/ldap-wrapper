@@ -11,6 +11,8 @@ class LDAPUser extends LDAPEntry {
 	
 	protected $isAdmin = self::EMPTY_RESULT;
 
+	protected $isDisabled = self::EMPTY_RESULT;
+
 	protected $managerOf = array();
 
 	protected $memberOf = array();
@@ -69,5 +71,12 @@ class LDAPUser extends LDAPEntry {
 			$this->isAdmin = $this->ldapWrapper->isAdmin($this->getDN());
 		}
 		return $this->isAdmin;
+	}
+
+	public function isDisabled() {
+		if ($this->isDisabled === self::EMPTY_RESULT) {
+			$this->isDisabled = $this->ldapWrapper->isDisabled($this->getDN());
+		}
+		return $this->isDisabled;
 	}
 }
