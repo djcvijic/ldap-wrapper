@@ -5,13 +5,17 @@ namespace Cvl\LDAPWrapper;
 class LDAPGroup extends LDAPEntry {
 
 	const EMPTY_RESULT = -1;
-	
-	protected $members = self::EMPTY_RESULT;
+
+	protected $allUserTypeMembers = self::EMPTY_RESULT;
+
+	protected $directUserTypeMembers = self::EMPTY_RESULT;
+
+	protected $directGroupTypeMembers = self::EMPTY_RESULT;
 
 	protected $managers = self::EMPTY_RESULT;
-	
+
 	protected $description = self::EMPTY_RESULT;
-	
+
 	public function getDescription() {
 		if ($this->description === self::EMPTY_RESULT) {
 			$this->description = $this->ldapWrapper->getAttributeForParticularDN($this->getDN(), LDAPWrapper::LDAP_ATTRIBUTE_DESCRIPTION);
@@ -24,11 +28,30 @@ class LDAPGroup extends LDAPEntry {
 		return $this->description;
 	}
 
+	/** @deprecated Use getAllUserTypeMembers */
 	public function getMembers() {
-		if ($this->members === self::EMPTY_RESULT) {
-			$this->members = $this->ldapWrapper->getAllUserTypeMembersOfGroup($this->getDN());
+		return $this->getAllUserTypeMembers();
+	}
+
+	public function getAllUserTypeMembers() {
+		if ($this->allUserTypeMembers === self::EMPTY_RESULT) {
+			$this->allUserTypeMembers = $this->ldapWrapper->getAllUserTypeMembersOfGroup($this->getDN());
 		}
-		return $this->members;
+		return $this->allUserTypeMembers;
+	}
+
+	public function getDirectUserTypeMembers() {
+		if ($this->directUserTypeMembers === self::EMPTY_RESULT) {
+			$this->directUserTypeMembers = $this->ldapWrapper->getDirectUserTypeMembersOfGroup($this->getDN());
+		}
+		return $this->directUserTypeMembers;
+	}
+
+	public function getDirectGroupTypeMembers() {
+		if ($this->directGroupTypeMembers === self::EMPTY_RESULT) {
+			$this->directGroupTypeMembers = $this->ldapWrapper->getDirectGroupTypeMembersOfGroup($this->getDN());
+		}
+		return $this->directGroupTypeMembers;
 	}
 
 	public function getManagers() {

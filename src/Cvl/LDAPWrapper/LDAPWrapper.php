@@ -604,31 +604,90 @@ class LDAPWrapper {
 	 * @return array of LDAPUser objects representing members of the specified group, NULL if there are no members in group.
 	 */
 	public function getAllUserTypeMembersOfGroup($groupDN, $sort = true) {
-		$dns = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
-		$membersArray = $this->filterDNs($dns, $this->userBaseDNs);
+		$allUsersArray = array();
 
-		$members = array();
+		$directUsersArray = $this->getDirectUserTypeMembersOfGroup($groupDN, false);
 
-		if ($membersArray != null) {
-			foreach ($membersArray as $memberDN) {
-				$members[] = new LDAPUser($this, $memberDN);
+		if ($directUsersArray != null) {
+			$allUsersArray = $directUsersArray;
+		}
+
+		$nestedGroupsArray = $this->getDirectGroupTypeMembersOfGroup($groupDN);
+
+		if (!empty($nestedGroupsArray)) {
+			foreach ($nestedGroupsArray as $nestedGroup) {
+				$directUsersOfNestedGroup = $nestedGroup->getDirectUserTypeMembers();
+				if (!empty($directUsersOfNestedGroup)) {
+					$allUsersArray = array_merge($allUsersArray, $directUsersOfNestedGroup);
+				}
+
+				$nestedUsersOfNestedGroup = $nestedGroup->getAllUserTypeMembers();
+				if (!empty($nestedUsersOfNestedGroup)) {
+					$allUsersArray = array_merge($allUsersArray, $nestedUsersOfNestedGroup);
+				}
 			}
 		}
 
-		$nestedGroupArray = $this->filterDNs($dns, $this->groupBaseDNs);
+		if (empty($allUsersArray)) {
+			return null;
+		}
 
-		if ($nestedGroupArray != null) {
-			foreach ($nestedGroupArray as $nestedGroupDN) {
-				$members = array_merge($members, $this->getAllUserTypeMembersOfGroup($nestedGroupDN, false));
-			}
-			$members = array_unique($members);
+		$allUsersArray = array_unique($allUsersArray);
+
+		if ($sort) {
+			$this->sortUsersByCanModifyGroupThenCommonName($allUsersArray, $groupDN);
+		}
+
+		return $allUsersArray;
+	}
+
+	/**
+	 * @param string $groupDN
+	 * @param bool $sort
+	 * @return array of LDAPUser objects representing direct user members of the specified group,
+	 *                  NULL if there are no direct user type members in group.
+	 */
+	public function getDirectUserTypeMembersOfGroup($groupDN, $sort = true) {
+		$directMemberDnsArray = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+		$directUserTypeDnsArray = $this->filterDNs($directMemberDnsArray, $this->userBaseDNs);
+
+		if ($directUserTypeDnsArray == null) {
+			return null;
+		}
+
+		$userTypeMembersArray = array();
+
+		foreach ($directUserTypeDnsArray as $userMemberDN) {
+			$userTypeMembersArray[] = new LDAPUser($this, $userMemberDN);
 		}
 
 		if ($sort) {
-			$this->sortUsersByCanModifyGroupThenCommonName($members, $groupDN);
+			$this->sortUsersByCanModifyGroupThenCommonName($userTypeMembersArray, $groupDN);
 		}
 
-		return $members;
+		return $userTypeMembersArray;
+	}
+
+	/**
+	 * @param string $groupDN
+	 * @return array of LDAPGroup objects representing direct group members of the specified group,
+	 *                  NULL if there are no direct group type members in group.
+	 */
+	public function getDirectGroupTypeMembersOfGroup($groupDN) {
+		$directMemberDnsArray = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+		$directGroupTypeDnsArray = $this->filterDNs($directMemberDnsArray, $this->groupBaseDNs);
+
+		if ($directGroupTypeDnsArray == null) {
+			return null;
+		}
+
+		$groupTypeMembersArray = array();
+
+		foreach ($directGroupTypeDnsArray as $groupMemberDN) {
+			$groupTypeMembersArray[] = new LDAPGroup($this, $groupMemberDN);
+		}
+
+		return $groupTypeMembersArray;
 	}
 
 	/**
