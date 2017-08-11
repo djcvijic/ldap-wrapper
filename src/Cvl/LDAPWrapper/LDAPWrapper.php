@@ -416,12 +416,23 @@ class LDAPWrapper {
 	}
 
 	/**
-	 *
-	 * @param string $groupDN        	
-	 * @param string $userDN        	
+	 * @deprecated please use isEffectiveGroupMember method
+	 * @param string $groupDN
+	 * @param string $userDN
 	 * @return boolean|bool whether specified user is member of specified group
 	 */
 	public function isGroupMember($groupDN, $userDN) {
+		return $this->isEffectiveGroupMember($groupDN, $userDN);
+	}
+
+	/**
+	 * Recursively check if user is member of given group or any nested one within it
+	 *
+	 * @param string $groupDN
+	 * @param string $userDN
+	 * @return boolean|bool whether specified user is member of specified group
+	 */
+	public function isEffectiveGroupMember($groupDN, $userDN) {
 		$attribute = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
 
 		if ($attribute === null) {
@@ -432,10 +443,25 @@ class LDAPWrapper {
 
 		$nestedGroupArray = $this->filterDNs($attribute, $this->groupBaseDNs);
 		foreach ($nestedGroupArray as $nestedGroupDN) {
-			if ($this->isGroupMember($nestedGroupDN, $userDN)) return true;
+			if ($this->isEffectiveGroupMember($nestedGroupDN, $userDN)) return true;
 		}
-		
+
 		return false;
+	}
+
+	/**
+	 * @param string $groupDN
+	 * @param string $userDN
+	 * @return boolean|bool whether specified user is member of specified group
+	 */
+	public function isDirectGroupMember($groupDN, $userDN) {
+		$attribute = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+
+		if ($attribute === null) {
+			return false;
+		}
+
+		return in_array($userDN, $attribute);
 	}
 
 	/**
@@ -455,7 +481,7 @@ class LDAPWrapper {
 	}
 
 	public function isAdmin($userDN) {
-		return $this->isGroupMember($this->adminGroup, $userDN);
+		return $this->isEffectiveGroupMember($this->adminGroup, $userDN);
 	}
 
 	/**
@@ -805,7 +831,7 @@ class LDAPWrapper {
 		 * To add someone to a group, you have to add the user in the group, and not the group in the user.
 		 * You can do this by accessing the group attribute 'member':
 		 */
-		if (!$this->isGroupMember($groupDN, $memberDN)) {
+		if (!$this->isDirectGroupMember($groupDN, $memberDN)) {
 			ldap_mod_add($this->ldapconn, $groupDN, array(
 				self::LDAP_ATTRIBUTE_MEMBER => $memberDN
 			));
@@ -846,7 +872,7 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
 			));
 		}
-		if ($this->isGroupMember($groupDN, $memberDN)) {
+		if ($this->isDirectGroupMember($groupDN, $memberDN)) {
 			ldap_mod_del($this->ldapconn, $groupDN, array(
 				self::LDAP_ATTRIBUTE_MEMBER => $memberDN
 			));

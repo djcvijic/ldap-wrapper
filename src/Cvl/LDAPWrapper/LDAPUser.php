@@ -15,7 +15,9 @@ class LDAPUser extends LDAPEntry {
 
 	protected $managerOf = array();
 
-	protected $memberOf = array();
+	protected $directMemberOf = array();
+
+	protected $effectiveMemberOf = array();
 
 	public function getDisplayName() {
 		if ($this->displayName == self::EMPTY_RESULT) {
@@ -55,11 +57,23 @@ class LDAPUser extends LDAPEntry {
 		return $this->managerOf[$groupDN];
 	}
 
+	/** @deprecated Use isEffectiveMemberOf method */
 	public function isMemberOf($groupDN) {
-		if (!isset($this->memberOf[$groupDN])) {
-			$this->memberOf[$groupDN] = $this->ldapWrapper->isGroupMember($groupDN, $this->getDN());
+		return $this->isEffectiveMemberOf($groupDN);
+	}
+
+	public function isEffectiveMemberOf($groupDN) {
+		if (!isset($this->effectiveMemberOf[$groupDN])) {
+			$this->effectiveMemberOf[$groupDN] = $this->ldapWrapper->isEffectiveGroupMember($groupDN, $this->getDN());
 		}
-		return $this->memberOf[$groupDN];
+		return $this->effectiveMemberOf[$groupDN];
+	}
+
+	public function isDirectMemberOf($groupDN) {
+		if (!isset($this->directMemberOf[$groupDN])) {
+			$this->directMemberOf[$groupDN] = $this->ldapWrapper->isDirectGroupMember($groupDN, $this->getDN());
+		}
+		return $this->directMemberOf[$groupDN];
 	}
 
 	public function canModify($groupDN) {
