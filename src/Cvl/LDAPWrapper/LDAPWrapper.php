@@ -9,6 +9,7 @@ class LDAPWrapper {
 	const LDAP_ATTRIBUTE_MANAGER = 'groupManager';
 	const LDAP_ATTRIBUTE_DESCRIPTION = 'description';
 	const LDAP_ATTRIBUTE_ACCOUNT_NAME = 'sAMAccountName';
+	const LDAP_MATCHING_RULE_BIT_AND = '1.2.840.113556.1.4.803';
 	const USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT = 0x200;
 	const USER_ACCOUNT_CONTROL_ACCOUNTDISABLE = 0x2;
 	const GROUP_TYPE = 0x80000002;
@@ -40,6 +41,8 @@ class LDAPWrapper {
 	protected $defaultOfficeGroups;
 
 	protected $ldapconn = null;
+
+	protected $attributesCache = array();
 
 	public function __construct($ldapConfig) {
 		$this->ldapHost				= $ldapConfig['host'];
@@ -130,17 +133,29 @@ class LDAPWrapper {
 		return (preg_match($pattern, $str) === 0);
 	}
 
+	protected function getAttributeCacheKey($dn, $attributes) {
+		$attributesKey = implode('#', $attributes);
+		return "$dn#$attributesKey";
+	}
+
+	protected function invalidateAttributesCache() {
+		$this->attributesCache = [];
+	}
+
 	/**
-	 *
-	 * @param string $dn
-	 *        	Distinquished name of entry.
-	 * @param array $attributes
-	 *        	Array of strings-attributes which should be fetched for specified dn.
+	 * @param string $dn - Distinguished name of entry.
+	 * @param array $attributes - Array of strings-attributes which should be fetched for specified dn.
+	 * @param bool $forceFetch - If set to true value is not fetched from LDAP and cache is updated
 	 * @throws \Exception in a case of error
 	 * @return array of strings containing searched attributes;
 	 *         <br><b>NOTE:</b> only attributes that actually exist in entry will be fetched.
 	 */
-	protected function getAttributesForParticularDN($dn, $attributes) {
+	protected function getAttributesForParticularDN($dn, $attributes, $forceFetch = false) {
+		$cacheKey = $this->getAttributeCacheKey($dn, $attributes);
+		if (!$forceFetch && isset($this->attributesCache[$cacheKey])) {
+			return $this->attributesCache[$cacheKey];
+		}
+
 		$filter = "distinguishedName=$dn";
 		
 		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, $attributes);
@@ -158,20 +173,21 @@ class LDAPWrapper {
 		if (!isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
 			return null;
 		}
-		
+
+		$this->attributesCache[$cacheKey] = $resultEntries[0];
 		return $resultEntries[0];
 	}
 
 	/**
-	 *
-	 * @param string $dn        	
-	 * @param string $attribute        	
+	 * @param string $dn
+	 * @param string $attribute
+	 * @param bool $forceFetch - If set to true value is not fetched from LDAP and cache is updated
 	 * @return array of strings representing values for specified attribute, null in case there is no such attribute.
 	 */
-	public function getAttributeForParticularDN($dn, $attribute) {
+	public function getAttributeForParticularDN($dn, $attribute, $forceFetch = false) {
 		$results = $this->getAttributesForParticularDN($dn, array(
 			$attribute
-		));
+		), $forceFetch);
 		
 		$attributeLowerCase = strtolower($attribute);
 		
@@ -197,12 +213,13 @@ class LDAPWrapper {
 		$position = strpos($newDN, ',');
 		$parentDN = substr($newDN, $position + 1);
 		$newRDN = substr($newDN, 0, $position);
-		
+
 		if (ldap_rename($this->ldapconn, $dn, $newRDN, $parentDN, true)) {
 			$info = array();
 			// account name should be changed, otherwise old dn of this group could not be used for new ones.
 			$info[self::LDAP_ATTRIBUTE_ACCOUNT_NAME] = substr($newRDN, strpos($newRDN, '=') + 1);
 			ldap_modify($this->ldapconn, $newDN, $info);
+			$this->invalidateAttributesCache();
 		} else {
 			throw new LDAPException('Ldap rename error: ' . ldap_error($this->ldapconn));
 		}
@@ -218,6 +235,7 @@ class LDAPWrapper {
 		$info = array();
 		$info[self::LDAP_ATTRIBUTE_DESCRIPTION] = $newDescription;
 		ldap_modify($this->ldapconn, $dn, $info);
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -229,6 +247,7 @@ class LDAPWrapper {
 		if (!ldap_delete($this->ldapconn, $dn)) {
 			throw new LDAPException('Ldap delete error: ' . ldap_error($this->ldapconn));
 		}
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -324,6 +343,7 @@ class LDAPWrapper {
 			error_log('Error modifying user in LDAP: ' . ldap_error($this->ldapconn));
 			return null;
 		}
+		$this->invalidateAttributesCache();
 		return $newDN;
 	}
 
@@ -342,9 +362,9 @@ class LDAPWrapper {
 		if (!empty($description)) {
 			$info[self::LDAP_ATTRIBUTE_DESCRIPTION] = $description;
 		}
-		
+
 		$dn = "CN=$name,$this->newGroupDir";
-		
+
 		if (ldap_add($this->ldapconn, $dn, $info)) {
 			return $dn;
 		} else {
@@ -360,22 +380,26 @@ class LDAPWrapper {
 	 * @return string DN of user with provided common name.
 	 */
 	public function getUserDNByCommonName($commonName) {
-		$filter = "cn=$commonName";
-		
+		$filter = "(&(objectCategory=person)(cn=$commonName))";
+
 		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, array(
 			'dn'
 		));
-		
+
 		if (!$searchResults) {
 			throw new LDAPException('User with provided common name does not exist');
 		}
-		
+
 		$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
-		
-		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
+
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] === 0) {
+			throw new LDAPException('User with provided common name does not exist');
+		}
+
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] > 1) {
 			throw new LDAPException('There are multiple users with provided common name');
 		}
-		
+
 		return $resultEntries[0]['dn'];
 	}
 
@@ -387,32 +411,47 @@ class LDAPWrapper {
 	 * @return string DN of user with provided username.
 	 */
 	public function getUserDNByUsername($username) {
-		$filter = self::LDAP_ATTRIBUTE_ACCOUNT_NAME . "=$username";
-		
+		$filter = "(&(objectCategory=person)(" . self::LDAP_ATTRIBUTE_ACCOUNT_NAME . "=$username" . "))";
+
 		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, array(
 			'dn'
 		));
-		
+
 		if (!$searchResults) {
 			throw new LDAPException('User with provided username does not exist');
 		}
-		
+
 		$resultEntries = ldap_get_entries($this->ldapconn, $searchResults);
-		
-		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
-			throw new LDAPException('User with provided username does not exist, or there are multiple users with provided username');
+
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] === 0) {
+			throw new LDAPException('User with provided username does not exist');
 		}
-		
+
+		if (!$resultEntries || !isset($resultEntries['count']) || $resultEntries['count'] > 1) {
+			throw new LDAPException('There are multiple users with provided username');
+		}
+
 		return $resultEntries[0]['dn'];
 	}
 
 	/**
-	 *
-	 * @param string $groupDN        	
-	 * @param string $userDN        	
+	 * @deprecated please use isEffectiveGroupMember method
+	 * @param string $groupDN
+	 * @param string $userDN
 	 * @return boolean|bool whether specified user is member of specified group
 	 */
 	public function isGroupMember($groupDN, $userDN) {
+		return $this->isEffectiveGroupMember($groupDN, $userDN);
+	}
+
+	/**
+	 * Recursively check if user is member of given group or any nested one within it
+	 *
+	 * @param string $groupDN
+	 * @param string $userDN
+	 * @return boolean|bool whether specified user is member of specified group
+	 */
+	public function isEffectiveGroupMember($groupDN, $userDN) {
 		$attribute = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
 
 		if ($attribute === null) {
@@ -423,10 +462,25 @@ class LDAPWrapper {
 
 		$nestedGroupArray = $this->filterDNs($attribute, $this->groupBaseDNs);
 		foreach ($nestedGroupArray as $nestedGroupDN) {
-			if ($this->isGroupMember($nestedGroupDN, $userDN)) return true;
+			if ($this->isEffectiveGroupMember($nestedGroupDN, $userDN)) return true;
 		}
-		
+
 		return false;
+	}
+
+	/**
+	 * @param string $groupDN
+	 * @param string $userDN
+	 * @return boolean|bool whether specified user is member of specified group
+	 */
+	public function isDirectGroupMember($groupDN, $userDN) {
+		$attribute = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+
+		if ($attribute === null) {
+			return false;
+		}
+
+		return in_array($userDN, $attribute);
 	}
 
 	/**
@@ -446,7 +500,23 @@ class LDAPWrapper {
 	}
 
 	public function isAdmin($userDN) {
-		return $this->isGroupMember($this->adminGroup, $userDN);
+		return $this->isEffectiveGroupMember($this->adminGroup, $userDN);
+	}
+
+	/**
+	 * @param $userDN
+	 * @return bool whether specified user is disabled or not (works only with ActiveDirectory, otherwise returns false)
+	 */
+	public function isUserDisabled($userDN) {
+		$attribute = $this->getAttributeForParticularDN($userDN, 'UserAccountControl');
+
+		if ($attribute === null && !isset($attribute[0])) {
+			return false;
+		}
+
+		$attribute = intval($attribute[0]);
+
+		return ($attribute & self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE) !== 0;
 	}
 
 	/**
@@ -561,34 +631,124 @@ class LDAPWrapper {
 	}
 
 	/**
+	 * @deprecated Use getAllUserTypeMembersOfGroup
 	 *
-	 * @param string $groupDN        	
+	 * @param string $groupDN
+	 * @param bool $sort
 	 * @return array of LDAPUser objects representing members of the specified group, NULL if there are no members in group.
 	 */
 	public function getMembersOfGroup($groupDN, $sort = true) {
-		$dns = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
-		$membersArray = $this->filterDNs($dns, $this->userBaseDNs);
-		
-		if ($membersArray == null) {
+		return $this->getAllUserTypeMembersOfGroup($groupDN, $sort);
+	}
+
+	/**
+	 * Recursively get user type members from specified group and all nested groups within it
+	 *
+	 * @param string $groupDN
+	 * @param bool $sort
+	 * @return array of LDAPUser objects representing members of the specified group, NULL if there are no members in group.
+	 */
+	public function getAllUserTypeMembersOfGroup($groupDN, $sort = true) {
+		$allUsersArray = array();
+
+		$directUsersArray = $this->getDirectUserTypeMembersOfGroup($groupDN, false);
+
+		if ($directUsersArray != null) {
+			$allUsersArray = $directUsersArray;
+		}
+
+		$nestedGroupsArray = $this->getDirectGroupTypeMembersOfGroup($groupDN);
+
+		if (!empty($nestedGroupsArray)) {
+			$unprocessedSet = [];
+			$finishedSet = [];
+
+			foreach ($nestedGroupsArray as $nestedGroup) {
+				$unprocessedSet[$nestedGroup->getDN()] = $nestedGroup;
+			}
+
+			while (!empty($unprocessedSet)) {
+				/** @var LDAPGroup $currentGroup */
+				$currentGroup = array_shift($unprocessedSet);
+				$finishedSet[$currentGroup->getDN()] = $currentGroup;
+
+				$directUsersArrayOfCurrentGroup = $currentGroup->getDirectUserTypeMembers();
+				if (!empty($directUsersArrayOfCurrentGroup)) {
+					$allUsersArray = array_merge($allUsersArray, $directUsersArrayOfCurrentGroup);
+				}
+
+				$directGroupsArrayOfCurrentGroup = $currentGroup->getDirectGroupTypeMembers();
+				if (!empty($directGroupsArrayOfCurrentGroup)) {
+					foreach ($directGroupsArrayOfCurrentGroup as $directGroupOfCurrentGroup) {
+						/** @var LDAPGroup $directGroupOfCurrentGroup */
+						if (empty($finishedSet[$directGroupOfCurrentGroup->getDN()])) {
+							$unprocessedSet[$directGroupOfCurrentGroup->getDN()] = $directGroupOfCurrentGroup;
+						}
+					}
+				}
+			}
+		}
+
+		if (empty($allUsersArray)) {
 			return null;
 		}
 
-		$members = array();
-		foreach ($membersArray as $memberDN) {
-			$members[] = new LDAPUser($this, $memberDN);
-		}
-
-		$nestedGroupArray = $this->filterDNs($dns, $this->groupBaseDNs);
-		foreach ($nestedGroupArray as $nestedGroupDN) {
-			$members = array_merge($members, $this->getMembersOfGroup($nestedGroupDN, false));
-		}
-		$members = array_unique($members);
+		$allUsersArray = array_unique($allUsersArray);
 
 		if ($sort) {
-			$this->sortUsersByCanModifyGroupThenCommonName($members, $groupDN);
+			$this->sortUsersByCanModifyGroupThenCommonName($allUsersArray, $groupDN);
 		}
-		
-		return $members;
+
+		return $allUsersArray;
+	}
+
+	/**
+	 * @param string $groupDN
+	 * @param bool $sort
+	 * @return array of LDAPUser objects representing direct user members of the specified group,
+	 *                  NULL if there are no direct user type members in group.
+	 */
+	public function getDirectUserTypeMembersOfGroup($groupDN, $sort = true) {
+		$directMemberDnsArray = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+		$directUserTypeDnsArray = $this->filterDNs($directMemberDnsArray, $this->userBaseDNs);
+
+		if ($directUserTypeDnsArray == null) {
+			return null;
+		}
+
+		$userTypeMembersArray = array();
+
+		foreach ($directUserTypeDnsArray as $userMemberDN) {
+			$userTypeMembersArray[] = new LDAPUser($this, $userMemberDN);
+		}
+
+		if ($sort) {
+			$this->sortUsersByCanModifyGroupThenCommonName($userTypeMembersArray, $groupDN);
+		}
+
+		return $userTypeMembersArray;
+	}
+
+	/**
+	 * @param string $groupDN
+	 * @return array of LDAPGroup objects representing direct group members of the specified group,
+	 *                  NULL if there are no direct group type members in group.
+	 */
+	public function getDirectGroupTypeMembersOfGroup($groupDN) {
+		$directMemberDnsArray = $this->getAttributeForParticularDN($groupDN, self::LDAP_ATTRIBUTE_MEMBER);
+		$directGroupTypeDnsArray = $this->filterDNs($directMemberDnsArray, $this->groupBaseDNs);
+
+		if ($directGroupTypeDnsArray == null) {
+			return null;
+		}
+
+		$groupTypeMembersArray = array();
+
+		foreach ($directGroupTypeDnsArray as $groupMemberDN) {
+			$groupTypeMembersArray[] = new LDAPGroup($this, $groupMemberDN);
+		}
+
+		return $groupTypeMembersArray;
 	}
 
 	/**
@@ -653,10 +813,17 @@ class LDAPWrapper {
 
 	/**
 	 *
+	 * @param bool $includeDisabled - Includes disabled users. (can be used only with ActiveDirectory)
 	 * @return array of LDAPUser objects representing all users that are on userBaseDNs path, null if there are no such users.
 	 */
-	public function getAllUsers() {
-		$filter = 'objectClass=user';
+	public function getAllUsers($includeDisabled = true) {
+		$isPerson = 'objectCategory=person';
+		if ($includeDisabled) {
+			$filter = $isPerson;
+		} else {
+			$isDisabled = 'UserAccountControl:' . self::LDAP_MATCHING_RULE_BIT_AND . ':=' . self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
+			$filter = "(&($isPerson)(!($isDisabled)))";
+		}
 		
 		$attributes = array(
 			'dn'
@@ -699,11 +866,12 @@ class LDAPWrapper {
 		 * To add someone to a group, you have to add the user in the group, and not the group in the user.
 		 * You can do this by accessing the group attribute 'member':
 		 */
-		if (!$this->isGroupMember($groupDN, $memberDN)) {
+		if (!$this->isDirectGroupMember($groupDN, $memberDN)) {
 			ldap_mod_add($this->ldapconn, $groupDN, array(
 				self::LDAP_ATTRIBUTE_MEMBER => $memberDN
 			));
 		}
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -714,7 +882,7 @@ class LDAPWrapper {
 	 */
 	public function addManagerToGroup($memberDN, $groupDN) {
 		$this->addMemberToGroup($memberDN, $groupDN);
-		
+
 		if (!$this->isGroupManager($groupDN, $memberDN)) {
 			ldap_mod_add($this->ldapconn, $groupDN, array(
 				self::LDAP_ATTRIBUTE_MANAGER => $memberDN
@@ -723,6 +891,8 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
 			));
 		}
+
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -740,11 +910,12 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
 			));
 		}
-		if ($this->isGroupMember($groupDN, $memberDN)) {
+		if ($this->isDirectGroupMember($groupDN, $memberDN)) {
 			ldap_mod_del($this->ldapconn, $groupDN, array(
 				self::LDAP_ATTRIBUTE_MEMBER => $memberDN
 			));
 		}
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -763,6 +934,7 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
 			));
 		}
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -781,5 +953,6 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
 			));
 		}
+		$this->invalidateAttributesCache();
 	}
 }
