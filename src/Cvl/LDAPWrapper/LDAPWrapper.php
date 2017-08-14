@@ -488,7 +488,7 @@ class LDAPWrapper {
 	 * @param $userDN
 	 * @return bool whether specified user is disabled or not (works only with ActiveDirectory, otherwise returns false)
 	 */
-	public function isDisabled($userDN) {
+	public function isUserDisabled($userDN) {
 		$attribute = $this->getAttributeForParticularDN($userDN, 'UserAccountControl');
 
 		if ($attribute === null && !isset($attribute[0])) {
@@ -641,15 +641,31 @@ class LDAPWrapper {
 		$nestedGroupsArray = $this->getDirectGroupTypeMembersOfGroup($groupDN);
 
 		if (!empty($nestedGroupsArray)) {
+			$unprocessedSet = [];
+			$finishedSet = [];
+
 			foreach ($nestedGroupsArray as $nestedGroup) {
-				$directUsersOfNestedGroup = $nestedGroup->getDirectUserTypeMembers();
-				if (!empty($directUsersOfNestedGroup)) {
-					$allUsersArray = array_merge($allUsersArray, $directUsersOfNestedGroup);
+				$unprocessedSet[$nestedGroup->getDN()] = $nestedGroup;
+			}
+
+			while (!empty($unprocessedSet)) {
+				/** @var LDAPGroup $currentGroup */
+				$currentGroup = array_shift($unprocessedSet);
+				$finishedSet[$currentGroup->getDN()] = $currentGroup;
+
+				$directUsersArrayOfCurrentGroup = $currentGroup->getDirectUserTypeMembers();
+				if (!empty($directUsersArrayOfCurrentGroup)) {
+					$allUsersArray = array_merge($allUsersArray, $directUsersArrayOfCurrentGroup);
 				}
 
-				$nestedUsersOfNestedGroup = $nestedGroup->getAllUserTypeMembers();
-				if (!empty($nestedUsersOfNestedGroup)) {
-					$allUsersArray = array_merge($allUsersArray, $nestedUsersOfNestedGroup);
+				$directGroupsArrayOfCurrentGroup = $currentGroup->getDirectGroupTypeMembers();
+				if (!empty($directGroupsArrayOfCurrentGroup)) {
+					foreach ($directGroupsArrayOfCurrentGroup as $directGroupOfCurrentGroup) {
+						/** @var LDAPGroup $directGroupOfCurrentGroup */
+						if (empty($finishedSet[$directGroupOfCurrentGroup->getDN()])) {
+							$unprocessedSet[$directGroupOfCurrentGroup->getDN()] = $directGroupOfCurrentGroup;
+						}
+					}
 				}
 			}
 		}

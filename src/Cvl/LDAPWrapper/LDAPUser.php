@@ -89,7 +89,7 @@ class LDAPUser extends LDAPEntry {
 
 	public function isDisabled() {
 		if ($this->isDisabled === self::EMPTY_RESULT) {
-			$this->isDisabled = $this->ldapWrapper->isDisabled($this->getDN());
+			$this->isDisabled = $this->ldapWrapper->isUserDisabled($this->getDN());
 		}
 		return $this->isDisabled;
 	}
