@@ -42,6 +42,8 @@ class LDAPWrapper {
 
 	protected $ldapconn = null;
 
+	protected $attributesCache = array();
+
 	public function __construct($ldapConfig) {
 		$this->ldapHost				= $ldapConfig['host'];
 		$this->ldapPort				= $ldapConfig['port'];
@@ -131,17 +133,29 @@ class LDAPWrapper {
 		return (preg_match($pattern, $str) === 0);
 	}
 
+	protected function getAttributeCacheKey($dn, $attributes) {
+		$attributesKey = implode('#', $attributes);
+		return "$dn#$attributesKey";
+	}
+
+	protected function invalidateAttributesCache() {
+		$this->attributesCache = [];
+	}
+
 	/**
-	 *
-	 * @param string $dn
-	 *        	Distinquished name of entry.
-	 * @param array $attributes
-	 *        	Array of strings-attributes which should be fetched for specified dn.
+	 * @param string $dn - Distinguished name of entry.
+	 * @param array $attributes - Array of strings-attributes which should be fetched for specified dn.
+	 * @param bool $forceFetch - If set to true value is not fetched from LDAP and cache is updated
 	 * @throws \Exception in a case of error
 	 * @return array of strings containing searched attributes;
 	 *         <br><b>NOTE:</b> only attributes that actually exist in entry will be fetched.
 	 */
-	protected function getAttributesForParticularDN($dn, $attributes) {
+	protected function getAttributesForParticularDN($dn, $attributes, $forceFetch = false) {
+		$cacheKey = $this->getAttributeCacheKey($dn, $attributes);
+		if (!$forceFetch && isset($this->attributesCache[$cacheKey])) {
+			return $this->attributesCache[$cacheKey];
+		}
+
 		$filter = "distinguishedName=$dn";
 		
 		$searchResults = ldap_search($this->ldapconn, $this->baseDN, $filter, $attributes);
@@ -159,20 +173,21 @@ class LDAPWrapper {
 		if (!isset($resultEntries['count']) || $resultEntries['count'] !== 1) {
 			return null;
 		}
-		
+
+		$this->attributesCache[$cacheKey] = $resultEntries[0];
 		return $resultEntries[0];
 	}
 
 	/**
-	 *
-	 * @param string $dn        	
-	 * @param string $attribute        	
+	 * @param string $dn
+	 * @param string $attribute
+	 * @param bool $forceFetch - If set to true value is not fetched from LDAP and cache is updated
 	 * @return array of strings representing values for specified attribute, null in case there is no such attribute.
 	 */
-	public function getAttributeForParticularDN($dn, $attribute) {
+	public function getAttributeForParticularDN($dn, $attribute, $forceFetch = false) {
 		$results = $this->getAttributesForParticularDN($dn, array(
 			$attribute
-		));
+		), $forceFetch);
 		
 		$attributeLowerCase = strtolower($attribute);
 		
@@ -198,12 +213,13 @@ class LDAPWrapper {
 		$position = strpos($newDN, ',');
 		$parentDN = substr($newDN, $position + 1);
 		$newRDN = substr($newDN, 0, $position);
-		
+
 		if (ldap_rename($this->ldapconn, $dn, $newRDN, $parentDN, true)) {
 			$info = array();
 			// account name should be changed, otherwise old dn of this group could not be used for new ones.
 			$info[self::LDAP_ATTRIBUTE_ACCOUNT_NAME] = substr($newRDN, strpos($newRDN, '=') + 1);
 			ldap_modify($this->ldapconn, $newDN, $info);
+			$this->invalidateAttributesCache();
 		} else {
 			throw new LDAPException('Ldap rename error: ' . ldap_error($this->ldapconn));
 		}
@@ -219,6 +235,7 @@ class LDAPWrapper {
 		$info = array();
 		$info[self::LDAP_ATTRIBUTE_DESCRIPTION] = $newDescription;
 		ldap_modify($this->ldapconn, $dn, $info);
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -230,6 +247,7 @@ class LDAPWrapper {
 		if (!ldap_delete($this->ldapconn, $dn)) {
 			throw new LDAPException('Ldap delete error: ' . ldap_error($this->ldapconn));
 		}
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -325,6 +343,7 @@ class LDAPWrapper {
 			error_log('Error modifying user in LDAP: ' . ldap_error($this->ldapconn));
 			return null;
 		}
+		$this->invalidateAttributesCache();
 		return $newDN;
 	}
 
@@ -343,9 +362,9 @@ class LDAPWrapper {
 		if (!empty($description)) {
 			$info[self::LDAP_ATTRIBUTE_DESCRIPTION] = $description;
 		}
-		
+
 		$dn = "CN=$name,$this->newGroupDir";
-		
+
 		if (ldap_add($this->ldapconn, $dn, $info)) {
 			return $dn;
 		} else {
@@ -852,6 +871,7 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MEMBER => $memberDN
 			));
 		}
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -862,7 +882,7 @@ class LDAPWrapper {
 	 */
 	public function addManagerToGroup($memberDN, $groupDN) {
 		$this->addMemberToGroup($memberDN, $groupDN);
-		
+
 		if (!$this->isGroupManager($groupDN, $memberDN)) {
 			ldap_mod_add($this->ldapconn, $groupDN, array(
 				self::LDAP_ATTRIBUTE_MANAGER => $memberDN
@@ -871,6 +891,8 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
 			));
 		}
+
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -893,6 +915,7 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MEMBER => $memberDN
 			));
 		}
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -911,6 +934,7 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
 			));
 		}
+		$this->invalidateAttributesCache();
 	}
 
 	/**
@@ -929,5 +953,6 @@ class LDAPWrapper {
 				self::LDAP_ATTRIBUTE_MANAGER_OF => $groupDN
 			));
 		}
+		$this->invalidateAttributesCache();
 	}
 }
