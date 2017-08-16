@@ -2,6 +2,8 @@
 
 namespace Cvl\LDAPWrapper;
 
+use Exception;
+
 class LDAPWrapper {
 	const LDAP_ATTRIBUTE_MEMBER_OF = 'memberOf';
 	const LDAP_ATTRIBUTE_MEMBER = 'member';
@@ -251,7 +253,9 @@ class LDAPWrapper {
 	}
 
 	/**
+	 * @deprecated Use createPerson instead
 	 * Creates a user in the $newUserDir and adds it to the required groups
+	 *
 	 * @param string $firstName
 	 * @param string $lastName
 	 * @param string $username
@@ -259,48 +263,16 @@ class LDAPWrapper {
 	 * @param string $office
 	 * @param string $password
 	 * @param boolean $active
-	 * @return string The distinguished name of the created user, or null if the operation fails
+	 * @throws Exception
 	 */
 	public function createUser($firstName, $lastName, $username, $email, $office, $password, $active) {
-		$fullName = $firstName . ' ' . $lastName;
-		$info = array(
-			'objectClass'						=> array(
-													'top',
-													'person',
-													'organizationalPerson',
-													'user',
-												),
-			'givenName'							=> $firstName,
-			'sn'								=> $lastName,
-			'cn'								=> $fullName,
-			'displayName'						=> $fullName,
-			self::LDAP_ATTRIBUTE_DESCRIPTION	=> $fullName,
-			self::LDAP_ATTRIBUTE_ACCOUNT_NAME	=> $username,
-			'userPrincipalName'					=> $username . '@' . $this->ldapDomain,
-			'mail'								=> $email,
-			'unicodePwd'						=> iconv('UTF-8', 'UTF-16LE', '"' . $password . '"'),
-			'pwdLastSet'						=> '0',
-			'physicalDeliveryOfficeName'		=> $office,
-			'userAccountControl'				=> self::USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT,
-		);
-		if (!$active) {
-			$info['userAccountControl'] = $info['userAccountControl'] | self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
-		}
-		$dn = "CN=$fullName,$this->newUserDir";
-		if (!@ldap_add($this->ldapconn, $dn, $info)) {
-			error_log('Error creating user in LDAP: ' . ldap_error($this->ldapconn));
-			return null;
-		}
-		$groupsToJoin = $this->defaultGroups;
-		$groupsToJoin[] = $this->defaultOfficeGroups[$office];
-		foreach ($groupsToJoin as $groupDN) {
-			$this->addMemberToGroup($dn, $groupDN);
-		}
-		return $dn;
+		throw new Exception('createUser is deprecated, use createPerson instead');
 	}
 
 	/**
-	 * Edits the user with the given $userDN
+	 * @deprecated Use editPerson instead
+	 * Edits the user with the given $currentUsername
+	 *
 	 * @param string $currentUsername
 	 * @param string $firstName
 	 * @param string $lastName
@@ -308,43 +280,10 @@ class LDAPWrapper {
 	 * @param string $email
 	 * @param string $office
 	 * @param boolean $active
-	 * @return string The new distinguished name, or null if the operation fails
+	 * @throws Exception
 	 */
 	public function editUser($currentUsername, $firstName, $lastName, $username, $email, $office, $active) {
-		try {
-			$currentDN = $this->getUserDNByUsername($currentUsername);
-		} catch (LDAPException $e) {
-			error_log('Error searching for user in LDAP: ' . $e->getMessage());
-			return null;
-		}
-		$fullName = $firstName . ' ' . $lastName;
-		$newDN = "CN=$fullName,$this->newUserDir";
-		if ($currentDN != $newDN) {
-			if (!@ldap_rename($this->ldapconn, $currentDN, "CN=$fullName", $this->newUserDir, true)) {
-				error_log('Error renaming user in LDAP: ' . ldap_error($this->ldapconn));
-				return null;
-			}
-		}
-		$info = array(
-			'givenName'							=> $firstName,
-			'sn'								=> $lastName,
-			'displayName'						=> $fullName,
-			self::LDAP_ATTRIBUTE_DESCRIPTION	=> $fullName,
-			self::LDAP_ATTRIBUTE_ACCOUNT_NAME	=> $username,
-			'userPrincipalName'					=> $username . '@' . $this->ldapDomain,
-			'mail'								=> $email,
-			'physicalDeliveryOfficeName'		=> $office,
-			'userAccountControl'				=> self::USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT,
-		);
-		if (!$active) {
-			$info['userAccountControl'] = $info['userAccountControl'] | self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
-		}
-		if (!@ldap_modify($this->ldapconn, $newDN, $info)) {
-			error_log('Error modifying user in LDAP: ' . ldap_error($this->ldapconn));
-			return null;
-		}
-		$this->invalidateAttributesCache();
-		return $newDN;
+		throw new Exception('editUser is deprecated, use editPerson instead');
 	}
 
 	/**
@@ -404,7 +343,6 @@ class LDAPWrapper {
 	}
 
 	/**
-	 *
 	 * @param string $username
 	 *        	User's username
 	 * @throws LDAPException in a case of error
