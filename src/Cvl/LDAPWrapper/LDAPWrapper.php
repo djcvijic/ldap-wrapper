@@ -2,6 +2,8 @@
 
 namespace Cvl\LDAPWrapper;
 
+use Exception;
+
 class LDAPWrapper {
 	const LDAP_ATTRIBUTE_MEMBER_OF = 'memberOf';
 	const LDAP_ATTRIBUTE_MEMBER = 'member';
@@ -251,7 +253,9 @@ class LDAPWrapper {
 	}
 
 	/**
+	 * @deprecated Use createPerson instead
 	 * Creates a user in the $newUserDir and adds it to the required groups
+	 *
 	 * @param string $firstName
 	 * @param string $lastName
 	 * @param string $username
@@ -259,48 +263,16 @@ class LDAPWrapper {
 	 * @param string $office
 	 * @param string $password
 	 * @param boolean $active
-	 * @return string The distinguished name of the created user, or null if the operation fails
+	 * @throws Exception
 	 */
 	public function createUser($firstName, $lastName, $username, $email, $office, $password, $active) {
-		$fullName = $firstName . ' ' . $lastName;
-		$info = array(
-			'objectClass'						=> array(
-													'top',
-													'person',
-													'organizationalPerson',
-													'user',
-												),
-			'givenName'							=> $firstName,
-			'sn'								=> $lastName,
-			'cn'								=> $fullName,
-			'displayName'						=> $fullName,
-			self::LDAP_ATTRIBUTE_DESCRIPTION	=> $fullName,
-			self::LDAP_ATTRIBUTE_ACCOUNT_NAME	=> $username,
-			'userPrincipalName'					=> $username . '@' . $this->ldapDomain,
-			'mail'								=> $email,
-			'unicodePwd'						=> iconv('UTF-8', 'UTF-16LE', '"' . $password . '"'),
-			'pwdLastSet'						=> '0',
-			'physicalDeliveryOfficeName'		=> $office,
-			'userAccountControl'				=> self::USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT,
-		);
-		if (!$active) {
-			$info['userAccountControl'] = $info['userAccountControl'] | self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
-		}
-		$dn = "CN=$fullName,$this->newUserDir";
-		if (!@ldap_add($this->ldapconn, $dn, $info)) {
-			error_log('Error creating user in LDAP: ' . ldap_error($this->ldapconn));
-			return null;
-		}
-		$groupsToJoin = $this->defaultGroups;
-		$groupsToJoin[] = $this->defaultOfficeGroups[$office];
-		foreach ($groupsToJoin as $groupDN) {
-			$this->addMemberToGroup($dn, $groupDN);
-		}
-		return $dn;
+		throw new Exception('createUser is deprecated, use createPerson instead');
 	}
 
 	/**
-	 * Edits the user with the given $userDN
+	 * @deprecated Use editPerson instead
+	 * Edits the user with the given $currentUsername
+	 *
 	 * @param string $currentUsername
 	 * @param string $firstName
 	 * @param string $lastName
@@ -308,39 +280,172 @@ class LDAPWrapper {
 	 * @param string $email
 	 * @param string $office
 	 * @param boolean $active
-	 * @return string The new distinguished name, or null if the operation fails
+	 * @throws Exception
 	 */
 	public function editUser($currentUsername, $firstName, $lastName, $username, $email, $office, $active) {
-		try {
-			$currentDN = $this->getUserDNByUsername($currentUsername);
-		} catch (LDAPException $e) {
-			error_log('Error searching for user in LDAP: ' . $e->getMessage());
+		throw new Exception('editUser is deprecated, use editPerson instead');
+	}
+
+	/**
+	 * If cn attribute is present in $attrs remove it from the array and return it, otherwise return $defaultCN.
+	 *
+	 * @param array $attrs Passed by reference and may be modified
+	 * @param string $defaultCN
+	 * @return string
+	 */
+	protected function extractCN(&$attrs, $defaultCN) {
+		$commonName = $defaultCN;
+		if (isset($attrs['cn'])) {
+			$commonName = $attrs['cn'];
+			unset($attrs['cn']);
+		}
+		return $commonName;
+	}
+
+	/**
+	 * Return the user account control bits based on the $active flag.
+	 *
+	 * @param boolean $active
+	 * @return integer
+	 */
+	protected function calculateUserAccountControl($active) {
+		$userAccountControl = self::USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT;
+		if (!$active) {
+			$userAccountControl = $userAccountControl | self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
+		}
+		return $userAccountControl;
+	}
+
+	/**
+	 * Join the given $memberDN into the $defaultGroups and maybe one of $defaultOfficeGroups based on $office.
+	 *
+	 * @param string $memberDN
+	 * @param string $office
+	 */
+	protected function joinDefaultGroups($memberDN, $office) {
+		$groupsToJoin = array();
+		if (is_array($this->defaultGroups)) {
+			$groupsToJoin = $this->defaultGroups;
+		}
+		if (is_array($this->defaultOfficeGroups) && isset($this->defaultOfficeGroups[$office])) {
+			$groupsToJoin[] = $this->defaultOfficeGroups[$office];
+		}
+		foreach ($groupsToJoin as $groupDN) {
+			$this->addMemberToGroup($memberDN, $groupDN);
+		}
+	}
+
+	/**
+	 * Creates a person in the $newUserDir and adds it to the required groups
+	 *
+	 * @param string $username A username used in common name, sAMAccountName, and userPrincipalName
+	 * @param string $firstName Used in givenName and displayName
+	 * @param string $lastName Used in surname and displayName
+	 * @param boolean $active If false, the user account will be created as disabled
+	 * @param boolean $requirePasswordChange If true, sets pwdLastSet
+	 * @param string|null $password Optional, sets unicodePwd
+	 * @param string $office Optional, sets the physicalDeliveryOfficeName attribute and affect the default groups joined by the user
+	 * @param string $email Optional, sets the mail attribute
+	 * @param string $telephoneNumber Optional, sets the telephoneNumber attribute
+	 * @param string $description Optional, sets the description attribute
+	 * @param array $additionalAttrs Optional, any keys in this array will add or override existing attributes to be sent
+	 * @return string|null The distinguished name of the created user, or null if the operation fails
+	 */
+	public function createPerson($username, $firstName, $lastName, $active, $requirePasswordChange, $password = null, $office = '', $email = '', $telephoneNumber = '', $description = '', $additionalAttrs = array()) {
+		$commonName = $this->extractCN($additionalAttrs, $username);
+		$attrs = array(
+			'objectClass'						=> array(
+													'top',
+													'person',
+													'organizationalPerson',
+													'user',
+												),
+			'cn'								=> $commonName,
+			self::LDAP_ATTRIBUTE_ACCOUNT_NAME	=> $username,
+			'userPrincipalName'					=> $username . '@' . $this->ldapDomain,
+			'givenName'							=> $firstName,
+			'sn'								=> $lastName,
+			'displayName'						=> $firstName . ' ' . $lastName,
+			'userAccountControl'				=> $this->calculateUserAccountControl($active),
+			'physicalDeliveryOfficeName'		=> $office,
+			'mail'								=> $email,
+			'telephoneNumber'					=> $telephoneNumber,
+			self::LDAP_ATTRIBUTE_DESCRIPTION	=> $description,
+		);
+		if ($requirePasswordChange) {
+			$attrs['pwdLastSet'] = '0';
+		}
+		if (isset($password)) {
+			$attrs['unicodePwd'] = iconv('UTF-8', 'UTF-16LE', '"' . $password . '"');
+		}
+		$attrs += $additionalAttrs;
+		$dn = "CN=$commonName,$this->newUserDir";
+		if (!@ldap_add($this->ldapconn, $dn, $attrs)) {
+			error_log('Error creating person in LDAP: ' . ldap_error($this->ldapconn));
 			return null;
 		}
-		$fullName = $firstName . ' ' . $lastName;
-		$newDN = "CN=$fullName,$this->newUserDir";
+		$this->joinDefaultGroups($dn, $office);
+		return $dn;
+	}
+
+	/**
+	 * Renames the person $currentDN to the $newCN, without modifying any other attributes
+	 *
+	 * @param string $currentDN
+	 * @param string $newCN
+	 * @return string|null The new distinguished name, or null if the operation fails
+	 */
+	public function renamePerson($currentDN, $newCN) {
+		$newDN = "CN=$newCN,$this->newUserDir";
 		if ($currentDN != $newDN) {
-			if (!@ldap_rename($this->ldapconn, $currentDN, "CN=$fullName", $this->newUserDir, true)) {
-				error_log('Error renaming user in LDAP: ' . ldap_error($this->ldapconn));
+			if (!@ldap_rename($this->ldapconn, $currentDN, "CN=$newCN", $this->newUserDir, true)) {
+				error_log('Error renaming person in LDAP: ' . ldap_error($this->ldapconn));
 				return null;
 			}
 		}
-		$info = array(
+		return $newDN;
+	}
+
+	/**
+	 * Edits the person with the common name $newUsername, or $overrideAttributes['cn'] if it is set
+	 *
+	 * @param string $currentUsername Used to find the existing user
+	 * @param string $newUsername A username used in common name, sAMAccountName, and userPrincipalName
+	 * @param string $firstName Used in givenName and displayName
+	 * @param string $lastName Used in surname and displayName
+	 * @param boolean $active If false, the user account will be created as disabled
+	 * @param string $office Optional, sets the physicalDeliveryOfficeName attribute and affect the default groups joined by the user
+	 * @param string $email Optional, sets the mail attribute
+	 * @param string $telephoneNumber Optional, sets the telephoneNumber attribute
+	 * @param string $description Optional, sets the description attribute
+	 * @param array $additionalAttrs Optional, any keys in this array will add or override existing attributes to be sent
+	 * @return string|null The new distinguished name, or null if the operation fails
+	 */
+	public function editPerson($currentUsername, $newUsername, $firstName, $lastName, $active, $office = '', $email = '', $telephoneNumber = '', $description = '', $additionalAttrs = array()) {
+		try {
+			$currentDN = $this->getUserDNByUsername($currentUsername);
+		} catch (LDAPException $e) {
+			error_log('Error searching for person in LDAP: ' . $e->getMessage());
+			return null;
+		}
+		$newCN = $this->extractCN($additionalAttrs, $newUsername);
+		$newDN = $this->renamePerson($currentDN, $newCN);
+		if (!isset($newDN)) return null;
+		$attrs = array(
+			self::LDAP_ATTRIBUTE_ACCOUNT_NAME	=> $newUsername,
+			'userPrincipalName'					=> $newUsername . '@' . $this->ldapDomain,
 			'givenName'							=> $firstName,
 			'sn'								=> $lastName,
-			'displayName'						=> $fullName,
-			self::LDAP_ATTRIBUTE_DESCRIPTION	=> $fullName,
-			self::LDAP_ATTRIBUTE_ACCOUNT_NAME	=> $username,
-			'userPrincipalName'					=> $username . '@' . $this->ldapDomain,
-			'mail'								=> $email,
+			'displayName'						=> $firstName . ' ' . $lastName,
+			'userAccountControl'				=> $this->calculateUserAccountControl($active),
 			'physicalDeliveryOfficeName'		=> $office,
-			'userAccountControl'				=> self::USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT,
+			'mail'								=> $email,
+			'telephoneNumber'					=> $telephoneNumber,
+			self::LDAP_ATTRIBUTE_DESCRIPTION	=> $description,
 		);
-		if (!$active) {
-			$info['userAccountControl'] = $info['userAccountControl'] | self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
-		}
-		if (!@ldap_modify($this->ldapconn, $newDN, $info)) {
-			error_log('Error modifying user in LDAP: ' . ldap_error($this->ldapconn));
+		$attrs += $additionalAttrs;
+		if (!@ldap_modify($this->ldapconn, $newDN, $attrs)) {
+			error_log('Error modifying person in LDAP: ' . ldap_error($this->ldapconn));
 			return null;
 		}
 		$this->invalidateAttributesCache();
@@ -404,7 +509,6 @@ class LDAPWrapper {
 	}
 
 	/**
-	 *
 	 * @param string $username
 	 *        	User's username
 	 * @throws LDAPException in a case of error
