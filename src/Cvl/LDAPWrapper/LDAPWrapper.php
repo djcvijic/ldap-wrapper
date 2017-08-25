@@ -303,12 +303,12 @@ class LDAPWrapper {
 	}
 
 	/**
-	 * Get the user account control bits based on the $active flag.
+	 * Return the user account control bits based on the $active flag.
 	 *
 	 * @param boolean $active
 	 * @return integer
 	 */
-	protected function getUserAccountControl($active) {
+	protected function calculateUserAccountControl($active) {
 		$userAccountControl = self::USER_ACCOUNT_CONTROL_NORMAL_ACCOUNT;
 		if (!$active) {
 			$userAccountControl = $userAccountControl | self::USER_ACCOUNT_CONTROL_ACCOUNTDISABLE;
@@ -343,13 +343,13 @@ class LDAPWrapper {
 	 * @param string $lastName Used in surname and displayName
 	 * @param boolean $active If false, the user account will be created as disabled
 	 * @param boolean $requirePasswordChange If true, sets pwdLastSet
-	 * @param string $password Optional, sets unicodePwd
+	 * @param string|null $password Optional, sets unicodePwd
 	 * @param string $office Optional, sets the physicalDeliveryOfficeName attribute and affect the default groups joined by the user
 	 * @param string $email Optional, sets the mail attribute
 	 * @param string $telephoneNumber Optional, sets the telephoneNumber attribute
 	 * @param string $description Optional, sets the description attribute
-	 * @param string $additionalAttrs Optional, any keys in this array will add or override existing attributes to be sent
-	 * @return string The distinguished name of the created user, or null if the operation fails
+	 * @param array $additionalAttrs Optional, any keys in this array will add or override existing attributes to be sent
+	 * @return string|null The distinguished name of the created user, or null if the operation fails
 	 */
 	public function createPerson($username, $firstName, $lastName, $active, $requirePasswordChange, $password = null, $office = '', $email = '', $telephoneNumber = '', $description = '', $additionalAttrs = array()) {
 		$commonName = $this->extractCN($additionalAttrs, $username);
@@ -366,7 +366,7 @@ class LDAPWrapper {
 			'givenName'							=> $firstName,
 			'sn'								=> $lastName,
 			'displayName'						=> $firstName . ' ' . $lastName,
-			'userAccountControl'				=> $this->getUserAccountControl($active),
+			'userAccountControl'				=> $this->calculateUserAccountControl($active),
 			'physicalDeliveryOfficeName'		=> $office,
 			'mail'								=> $email,
 			'telephoneNumber'					=> $telephoneNumber,
@@ -393,7 +393,7 @@ class LDAPWrapper {
 	 *
 	 * @param string $currentDN
 	 * @param string $newCN
-	 * @return The new distinguished name, or null if the operation fails
+	 * @return string|null The new distinguished name, or null if the operation fails
 	 */
 	public function renamePerson($currentDN, $newCN) {
 		$newDN = "CN=$newCN,$this->newUserDir";
@@ -418,8 +418,8 @@ class LDAPWrapper {
 	 * @param string $email Optional, sets the mail attribute
 	 * @param string $telephoneNumber Optional, sets the telephoneNumber attribute
 	 * @param string $description Optional, sets the description attribute
-	 * @param string $additionalAttrs Optional, any keys in this array will add or override existing attributes to be sent
-	 * @return string The new distinguished name, or null if the operation fails
+	 * @param array $additionalAttrs Optional, any keys in this array will add or override existing attributes to be sent
+	 * @return string|null The new distinguished name, or null if the operation fails
 	 */
 	public function editPerson($currentUsername, $newUsername, $firstName, $lastName, $active, $office = '', $email = '', $telephoneNumber = '', $description = '', $additionalAttrs = array()) {
 		try {
@@ -437,7 +437,7 @@ class LDAPWrapper {
 			'givenName'							=> $firstName,
 			'sn'								=> $lastName,
 			'displayName'						=> $firstName . ' ' . $lastName,
-			'userAccountControl'				=> $this->getUserAccountControl($active),
+			'userAccountControl'				=> $this->calculateUserAccountControl($active),
 			'physicalDeliveryOfficeName'		=> $office,
 			'mail'								=> $email,
 			'telephoneNumber'					=> $telephoneNumber,
